@@ -108,6 +108,7 @@ class ProfileCancelReason(CaseInsensitiveStrEnum):
     USER = "user"
     WARMUP_FAILURE = "warmup_failure"
     FAILED_REQUEST_THRESHOLD = "failed_request_threshold"
+    SERVICE_ERROR = "service_error"
 
     @property
     def is_abort(self) -> bool:

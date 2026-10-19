@@ -14,7 +14,6 @@ Key responsibilities:
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -23,6 +22,7 @@ from msgspec.structs import replace as _struct_replace
 from aiperf.common.aiperf_logger import AIPerfLogger
 from aiperf.common.enums import CreditPhase
 from aiperf.common.phase import phase_runtime_key
+from aiperf.common.timing_runtime import RealTimingRuntime, TimingRuntime
 from aiperf.credit.dispatch import ChildDispatchResult, TurnAdmission
 from aiperf.credit.structs import Credit, TurnToSend
 from aiperf.timing.replay_dependencies import ReplayIssueGate
@@ -81,6 +81,7 @@ class CreditIssuer:
         session_tree_registry: SessionTreeRegistry | None = None,
         session_tree_registry_enabled: bool | None = None,
         replay_barrier: ReplayBarrierCoordinator | None = None,
+        runtime: TimingRuntime | None = None,
     ) -> None:
         """Initialize credit issuer.
 
@@ -111,6 +112,7 @@ class CreditIssuer:
         self._credit_router = credit_router
         self._cancellation_policy = cancellation_policy
         self._lifecycle = lifecycle
+        self._runtime = runtime if runtime is not None else RealTimingRuntime()
         self._url_selection_strategy = url_selection_strategy
         # Tree accounting defaults to PROFILING-only (WARMUP keeps the legacy
         # in-flight teardown release), but ``session_tree_registry_enabled``
@@ -447,7 +449,7 @@ class CreditIssuer:
             turn, self._phase
         )
         issued_at_ns = self._lifecycle.started_at_ns + (
-            time.perf_counter_ns() - self._lifecycle.started_at_perf_ns
+            self._runtime.now_ns() - self._lifecycle.started_at_perf_ns
         )
 
         # Get URL index from strategy (for multi-URL load balancing).
