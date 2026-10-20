@@ -46,9 +46,6 @@ def validate_simulation(
         raise NotImplementedError(
             "simulation: inference readiness probes are unsupported"
         )
-    dataset = run.cfg.get_default_dataset()
-    if getattr(dataset, "trace_idle_gap_cap_seconds", None) is not None:
-        raise NotImplementedError("simulation: per-trace idle cap is not supported")
     for phase in timing.phase_configs:
         _validate_phase(phase)
 
@@ -64,8 +61,6 @@ def _validate_phase(phase: CreditPhaseConfig) -> None:
         "prefill_concurrency_ramp_duration_sec",
         "request_rate_ramp_duration_sec",
         "request_rate_series",
-        "agentic_cache_warmup_duration_sec",
-        "warmup_requests_per_lane",
     ):
         if getattr(phase, name):
             raise NotImplementedError(f"{location}: {name} is not supported")

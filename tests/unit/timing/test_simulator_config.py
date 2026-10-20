@@ -71,7 +71,6 @@ def test_both_clock_and_transport_are_required(
     "field,value",
     [
         param("prefill_concurrency", 1, id="first-token-admission"),
-        param("agentic_cache_warmup_duration_sec", 1.0, id="accelerated-warmup"),
         param("seamless", True, id="overlapping-phases"),
     ],
 )  # fmt: skip
@@ -79,6 +78,23 @@ def test_uncoordinated_timing_is_rejected(field: str, value: Any) -> None:
     run, timing = configuration(**{field: value})
     with pytest.raises(NotImplementedError, match=field):
         validate_simulation(run, timing, "tcp://127.0.0.1:30001")
+
+
+def test_official_agentx_warmup_and_idle_caps_are_supported() -> None:
+    run, timing = configuration(
+        warmup_requests_per_lane=10,
+        system_idle_gap_cap_seconds=10.0,
+        grace_period_sec=1800.0,
+    )
+    run.cfg.get_default_dataset = lambda: SimpleNamespace(
+        trace_idle_gap_cap_seconds=300.0
+    )
+    validate_simulation(run, timing, "tcp://127.0.0.1:30001")
+
+
+def test_duration_cache_warmup_uses_the_same_runtime() -> None:
+    run, timing = configuration(agentic_cache_warmup_duration_sec=60.0)
+    validate_simulation(run, timing, "tcp://127.0.0.1:30001")
 
 
 def test_readiness_inference_cannot_enter_the_input_barrier() -> None:

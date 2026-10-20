@@ -113,6 +113,14 @@ a bounded timeout and exits nonzero without publishing phase success.
 Cancelled output retains available request records; uncommitted phase boundaries
 are reported as unknown rather than replaced with wall-clock timestamps.
 
+The adapter preserves the AgentX 1.0.7 workload policies from source commit
+`0f885254c30522e58b601848ca70d5bed1662694`, including trajectory snapshots,
+per-lane cache-pressure warmup, root-tree idle caps, and the system idle cap.
+Warmup grace uses virtual time; its drained wire-request event preserves paused
+DAG work for profiling. Cancellation transport safety waits use physical time.
+Record the official base, adapter patch commits, and installed distribution
+separately: this patched source is not the unmodified PyPI 1.0.7 wheel.
+
 Workload input still passes through the native loader and prompt composer. Weka
 traces supply their own response history, so simulated output text does not
 replace that history. The server schedules the actual tokenized prompts and
