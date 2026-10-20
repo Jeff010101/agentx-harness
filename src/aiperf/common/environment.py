@@ -1157,6 +1157,12 @@ class _TimingSettings(BaseSettings):
         description="Optional loopback TCP coordinator for the experimental "
         "sglang_simulator transport. Coordinates workload and server virtual time.",
     )
+    SIMULATOR_DRAIN_WORKFLOWS: bool = Field(
+        default=False,
+        description="Experimental simulator workflow cohort: stop new workflows at "
+        "the duration limit and finish all admitted trees. Requires fresh trajectories "
+        "and burst phase starts; ordinary request-duration behavior is the default.",
+    )
 
     CANCEL_DRAIN_TIMEOUT: float = Field(
         ge=1.0,

@@ -240,6 +240,16 @@ Report warmup and grace-completed latency samples separately; cancelled requests
 have no successful latency record. The server ledger records visible output,
 not computation discarded after cancellation.
 
+With `AIPERF_TIMING_SIMULATOR_DRAIN_WORKFLOWS=1`,
+`workflow_cohort.<phase_index>.json` records whole-tree admission and completion
+on the same elapsed virtual clock. Workflow latency is `completed_ns - admitted_ns`
+for every admitted tree, including completions after the measurement window.
+Count workflow completions inside the window separately from the complete
+admission cohort. Keep the fixed-window token-TPS denominator unchanged and
+require `phase_windows.json` to confirm `protocol_finished=true` before accepting
+the cohort. This opt-in policy starts fresh workflows; standard snapshot replay
+does not provide uncensored whole-workflow latency.
+
 **Type:** [Record Metric](#record-metrics)
 
 Measures how long it takes to receive the first token (or chunk of tokens) after sending a request. This is critical for user-perceived responsiveness in streaming scenarios, as it represents how quickly the model begins generating output.

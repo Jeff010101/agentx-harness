@@ -1020,7 +1020,11 @@ class PhaseRunner(TaskManagerMixin):
         """
         timed_out = False
         try:
-            timeout = self._lifecycle.time_left_in_seconds()
+            timeout = (
+                None
+                if getattr(self._config, "drain_admitted_workflows", False) is True
+                else self._lifecycle.time_left_in_seconds()
+            )
             timed_out = await self._wait_for_event_with_timeout(
                 name=f"{self._config.phase} phase sending",
                 event=self._progress.all_credits_sent_event,

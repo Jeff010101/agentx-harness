@@ -287,6 +287,7 @@ Timing manager configuration. Controls timing-related settings for credit phase 
 | Environment Variable | Default | Constraints | Description |
 |----------------------|---------|-------------|-------------|
 | `AIPERF_TIMING_SIMULATOR_COORDINATOR` | `None` | — | Optional loopback TCP coordinator for the experimental sglang_simulator transport. Coordinates workload and server virtual time. |
+| `AIPERF_TIMING_SIMULATOR_DRAIN_WORKFLOWS` | `False` | — | Experimental simulator workflow cohort: stop new workflows at the duration limit and finish all admitted trees. Requires fresh trajectories and burst phase starts; ordinary request-duration behavior is the default. |
 | `AIPERF_TIMING_CANCEL_DRAIN_TIMEOUT` | `10.0` | ≥ 1.0, ≤ 300.0 | Timeout in seconds for waiting for cancelled credits to drain after phase timeout |
 | `AIPERF_TIMING_RATE_RAMP_UPDATE_INTERVAL` | `0.1` | ≥ 0.01, ≤ 10.0 | Update interval in seconds for continuous rate ramping (default 0.1s = 100ms) |
 

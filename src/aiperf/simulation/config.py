@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
+from aiperf.common.enums import CreditPhase
 from aiperf.plugin.enums import EndpointType, TimingMode
 from aiperf.simulation.protocol import validate_endpoint
 
@@ -51,6 +53,20 @@ def validate_simulation(
         raise NotImplementedError("simulation: per-trace idle cap is not supported")
     for phase in timing.phase_configs:
         _validate_phase(phase)
+    if any(p.drain_admitted_workflows for p in timing.phase_configs) and (
+        timing.trajectory_start_min_ratio != 0
+        or timing.trajectory_start_max_ratio != 0
+        or len(run.cfg.get_profiling_phases()) != 1
+        or run.cfg.get_profiling_phases()[0].burst_phase_starts is not True
+        or getattr(
+            run.cfg.get_profiling_phases()[0], "system_idle_gap_cap_seconds", None
+        )
+        is not None
+    ):
+        raise NotImplementedError(
+            "simulation workflow cohort: requires one profiling phase, "
+            "trajectory-start-min/max-ratio=0, burst-phase-starts and no system idle cap"
+        )
 
 
 def _validate_phase(phase: CreditPhaseConfig) -> None:
@@ -71,3 +87,15 @@ def _validate_phase(phase: CreditPhaseConfig) -> None:
             raise NotImplementedError(f"{location}: {name} is not supported")
     if phase.request_cancellation.rate:
         raise NotImplementedError(f"{location}: randomized cancellation is unsupported")
+    if phase.drain_admitted_workflows and (
+        phase.phase != CreditPhase.PROFILING
+        or phase.expected_duration_sec is None
+        or not math.isfinite(phase.expected_duration_sec)
+        or phase.total_expected_requests is not None
+        or phase.expected_num_sessions is not None
+        or phase.grace_period_sec != math.inf
+    ):
+        raise NotImplementedError(
+            f"{location}: workflow cohort requires a finite profiling duration, "
+            "infinite grace, and no request/session count cap"
+        )

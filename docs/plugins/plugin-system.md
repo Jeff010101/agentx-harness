@@ -181,6 +181,25 @@ with the predictor and cache configuration; they do not measure physical hardwar
 The initial scope is one server and completion-driven agentic replay. Prefill
 concurrency, seamless phases and rate ramps are unsupported.
 
+For whole-workflow latency, set `AIPERF_TIMING_SIMULATOR_DRAIN_WORKFLOWS=1`,
+`--trajectory-start-min-ratio 0 --trajectory-start-max-ratio 0` and
+`--burst-phase-starts`. Use one profiling phase, a finite duration and infinite
+grace, with no request/session count cap. The duration closes admission of new
+workflow trees; all admitted roots, descendants, joins and tool waits finish.
+This fresh-workflow cohort is a different workload policy from standard AgentX
+snapshot replay.
+
+Use a custom phase with `timing_mode: agentic_replay` and
+`system_idle_gap_cap_seconds: null`. The named `inferencex-agentx-mvp` scenario
+automatically sets a 10-second idle cap and is incompatible with this policy.
+
+`workflow_cohort.<phase_index>.json` records each tree's actual slot-acquisition
+and final drain times. Only use it after `phase_windows.json` confirms
+`protocol_finished=true` for the same run. Compute workflow latency from every
+admitted tree, including those finishing after the window. Fixed-window token
+throughput remains a separate measurement; draining the cohort does not extend
+its denominator.
+
 This transport preserves the endpoint's JSON payload and the existing SSE parser.
 It adds a coordinator-owned `rid` derived from the benchmark, phase, and credit.
 User-supplied `rid` values are rejected. Its pooled connections have no concurrency

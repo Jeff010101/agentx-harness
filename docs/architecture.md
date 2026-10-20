@@ -107,6 +107,12 @@ return, and native accounting callback. Pending DAG joins are then cleaned up
 without waiting for workload timers beyond the cutoff.
 Wall-clock timeouts detect broken connections or stalled participants; they do
 not determine workload timing. Unsupported options fail during configuration.
+
+The optional simulator workflow cohort closes only new-tree admission at the
+duration limit. The existing session-tree registry observes real admission and
+whole-tree completion; all admitted continuations, joins and tool timers remain
+live until those trees drain. This requires fresh trajectories and burst starts.
+Ordinary request-duration replay keeps its existing cutoff behavior.
 If coordinated execution fails, the timing manager requests cancellation with
 the original service error. The controller collects available records within
 a bounded timeout and exits nonzero without publishing phase success.

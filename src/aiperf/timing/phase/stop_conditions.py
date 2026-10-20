@@ -203,6 +203,17 @@ class DurationStopCondition(StopCondition):
 
     def can_send_any_turn(self) -> bool:
         """Returns True if the duration has not been reached."""
+        if getattr(self._config, "drain_admitted_workflows", False) is True:
+            return True
+        return self._before_cutoff()
+
+    def can_start_new_session(self) -> bool:
+        """The cutoff always closes admission, including during workflow drain."""
+        if getattr(self._config, "drain_admitted_workflows", False) is True:
+            return self._before_cutoff()
+        return True
+
+    def _before_cutoff(self) -> bool:
         time_left = self._lifecycle.time_left_in_seconds()
         return time_left is not None and time_left > 0
 

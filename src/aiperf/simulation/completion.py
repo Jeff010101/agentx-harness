@@ -78,6 +78,8 @@ class SimulationPhasePublisher(PhasePublisher):
                 ),
                 "grace_unbounded": grace is None or not math.isfinite(grace),
             }
+            if config.drain_admitted_workflows:
+                self._phase_windows[key]["cohort_unit"] = "workflow"
             await self._record_window(phase_stats, complete=False)
         await super().publish_phase_start(config, phase_stats)
 

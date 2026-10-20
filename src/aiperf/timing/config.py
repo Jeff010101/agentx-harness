@@ -266,6 +266,11 @@ class CreditPhaseConfig(AIPerfBaseModel):
         gt=0,
         description="The expected duration of the credit phase in seconds.",
     )
+    drain_admitted_workflows: bool = Field(
+        default=False,
+        description="Close workflow admission at the duration limit, then finish "
+        "all admitted agentic trees. Set only by the simulator cohort adapter.",
+    )
     seamless: bool = Field(
         default=False,
         description="Whether the credit phase should be seamless. "

@@ -69,6 +69,7 @@ from aiperf.common.constants import MILLIS_PER_SECOND
 from aiperf.common.enums import CacheBustTarget, CreditPhase
 from aiperf.common.environment import Environment
 from aiperf.common.mixins import AIPerfLoggerMixin
+from aiperf.common.phase import phase_runtime_key
 from aiperf.common.scenario.base import TrajectoryWarmupFailedError
 from aiperf.common.scenario.context_overflow import is_context_overflow_response
 from aiperf.common.timing_runtime import RealTimingRuntime, TimingRuntime
@@ -92,6 +93,7 @@ if TYPE_CHECKING:
     from aiperf.config.resolution.plan import BenchmarkRun
     from aiperf.credit.issuer import CreditIssuer
     from aiperf.credit.structs import Credit
+    from aiperf.simulation.cohort import WorkflowCohort
     from aiperf.timing.branch_orchestrator import BranchOrchestrator
     from aiperf.timing.config import CreditPhaseConfig
     from aiperf.timing.conversation_source import ConversationSource
@@ -156,6 +158,11 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
         # release + the rootless lane-credit / ``_rootless_lane_outstanding``
         # path below.
         self._session_tree_registry = session_tree_registry
+        self._workflow_cohort: WorkflowCohort | None = None
+        self._cohort_phase_key = phase_runtime_key(
+            config.phase, getattr(config, "phase_index", None)
+        )
+        self._cohort_trace_ids: dict[str, str] = {}
 
         # Double-recycle guard, keyed on x_correlation_id (not trace_id): the
         # guard's intent is to catch the same final turn firing
@@ -235,6 +242,7 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
             run.cfg.get_cache_bust_target() if run is not None else CacheBustTarget.NONE
         )
         self._benchmark_id: str = run.benchmark_id if run is not None else "unknown"
+        self._artifact_dir = getattr(run, "artifact_dir", None)
         # ``--burst-phase-starts`` (BasePhaseConfig.burst_phase_starts on the
         # profiling phase). Default False: WARMUP is globally t*-aligned and
         # PROFILING subtracts one global minimum so its earliest request starts
@@ -390,6 +398,8 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
                 )
             )
             return
+        if self._workflow_cohort is not None:
+            self._workflow_cohort.complete(root_corr)
         self.scheduler.schedule_later(0.0, self._dispatch_recycled_on_lane(lane))
 
     async def setup_phase(self) -> None:
@@ -412,7 +422,9 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
         # can leave the whole system idle past the global cap.
         if self._system_idle_gap_cap_seconds is not None:
             self.scheduler.set_drain_observer(self.enforce_system_idle_cap)
-        if self._has_tree_registry:
+        if getattr(self.config, "drain_admitted_workflows", False) is True:
+            self._setup_workflow_cohort()
+        elif self._has_tree_registry:
             self._session_tree_registry.set_drain_callback(self._on_tree_drained)
         if (
             self.config.phase == CreditPhase.WARMUP
@@ -442,6 +454,32 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
                     f"still count toward concurrency); rootless lanes recycle into a "
                     f"fresh root once their background subagents drain"
                 )
+
+    def _setup_workflow_cohort(self) -> None:
+        """Observe actual admission and complete trees under the opt-in policy."""
+        from aiperf.simulation.cohort import WorkflowCohort
+
+        registry = self._session_tree_registry
+        if registry is None or not self._has_tree_registry:
+            raise ValueError("workflow cohort requires an active session-tree registry")
+        self._workflow_cohort = WorkflowCohort(
+            self._runtime,
+            is_drained=lambda: registry.open_count(self._cohort_phase_key) == 0,
+            finish_sending=self.credit_issuer.mark_sending_complete,
+        )
+        for trajectory in self.conversation_source.trajectories:
+            snapshot = trajectory.snapshot
+            if snapshot is None or any(
+                state.next_turn_index != 0 for state in snapshot.states
+            ):
+                raise ValueError("workflow cohort requires fresh full-tree snapshots")
+            root = self._lane_root_corr(snapshot)
+            if root is None:
+                raise ValueError("workflow cohort snapshot has no root")
+            self._cohort_trace_ids[root] = trajectory.conversation_id
+        registry.set_drain_callback(
+            self._on_tree_drained, on_open=self._on_workflow_admitted
+        )
 
     def _cache_warmup_lane(self, turn_or_credit: TurnToSend | Credit) -> int:
         """Resolve a warmup turn or credit to its stable trajectory lane."""
@@ -510,6 +548,15 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
         else:
             await self._execute_profiling()
         self.enforce_system_idle_cap()
+        if self._workflow_cohort is not None:
+            await self._runtime.sleep(self.lifecycle.time_left_in_seconds() or 0)
+            self._workflow_cohort.close_admission()
+
+    def _on_workflow_admitted(self, root: str, phase: CreditPhase | int) -> None:
+        """Use the registry's actual slot acquisition as workflow admission."""
+        if self._workflow_cohort is None or phase != self._cohort_phase_key:
+            raise RuntimeError("workflow admitted under the wrong phase")
+        self._workflow_cohort.admit(root, self._cohort_trace_ids.pop(root))
 
     def enforce_system_idle_cap(self, in_flight_requests: int | None = None) -> None:
         """Bound true system-idle time without changing an individual trace."""
@@ -955,6 +1002,17 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
 
     async def finalize_phase(self) -> None:
         """Persist the drained accelerated-warmup DAG for profiling."""
+        if self._workflow_cohort is not None:
+            if self._artifact_dir is None or self.lifecycle.started_at_perf_ns is None:
+                raise RuntimeError("workflow cohort is missing its run or start time")
+            start = self.lifecycle.started_at_perf_ns
+            await self._workflow_cohort.save(
+                self._artifact_dir / f"workflow_cohort.{self.config.phase_index}.json",
+                start_ns=start,
+                end_ns=start + round(self.config.expected_duration_sec * 1e9),
+                benchmark_id=self._benchmark_id,
+                phase_index=self.config.phase_index,
+            )
         if self._system_idle_gap_cap_seconds is not None:
             self._cancel_system_idle_watchdog()
             self.scheduler.set_drain_observer(None)
@@ -1635,6 +1693,10 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
 
         self._correlation_to_lane[session.x_correlation_id] = lane
         self._root_to_lane[session.effective_root_correlation_id] = lane
+        if self._workflow_cohort is not None:
+            self._cohort_trace_ids[session.effective_root_correlation_id] = (
+                next_trace_id
+            )
         if self.config.phase == CreditPhase.WARMUP:
             first_timestamp_ms = _as_timestamp_ms(
                 getattr(session.metadata.turns[0], "timestamp_ms", None)

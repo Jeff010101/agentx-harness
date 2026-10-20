@@ -8,7 +8,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from aiperf.common.base_component_service import BaseComponentService
-from aiperf.common.enums import CommandType, MessageType
+from aiperf.common.enums import CommandType, CreditPhase, MessageType
 from aiperf.common.environment import Environment
 from aiperf.common.event_loop_monitor import EventLoopMonitor
 from aiperf.common.exceptions import InvalidStateError
@@ -141,13 +141,28 @@ class TimingManager(BaseComponentService):
         credit_router = self.sticky_router
         runtime = None
         endpoint = Environment.TIMING.SIMULATOR_COORDINATOR
-        if endpoint or self.run.cfg.endpoint.transport == "sglang_simulator":
+        if (
+            endpoint
+            or self.run.cfg.endpoint.transport == "sglang_simulator"
+            or Environment.TIMING.SIMULATOR_DRAIN_WORKFLOWS
+        ):
             from aiperf.common.virtual_timing_runtime import VirtualTimingRuntime
             from aiperf.simulation.completion import SimulationPhasePublisher
             from aiperf.simulation.config import validate_simulation
             from aiperf.simulation.identity import VIRTUAL_TIMESTAMP_ORIGIN_NS
             from aiperf.simulation.router import SimulatorCreditRouter
 
+            if Environment.TIMING.SIMULATOR_DRAIN_WORKFLOWS:
+                self.config = self.config.model_copy(
+                    update={
+                        "phase_configs": [
+                            phase.model_copy(update={"drain_admitted_workflows": True})
+                            if phase.phase == CreditPhase.PROFILING
+                            else phase
+                            for phase in self.config.phase_configs
+                        ]
+                    }
+                )
             validate_simulation(self.run, self.config, endpoint)
             self._simulation_publisher = SimulationPhasePublisher(
                 pub_client=self.pub_client,

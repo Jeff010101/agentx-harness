@@ -86,6 +86,7 @@ class SessionTreeRegistry:
         self._concurrency_manager = concurrency_manager
         self._trees: dict[str, _TreeState] = {}
         self._on_drain: Callable[[str, PhaseRuntimeKey], None] | None = None
+        self._on_open: Callable[[str, PhaseRuntimeKey], None] | None = None
         # Descendants registered before their tree is opened (the agentic-replay
         # snapshot path seeds a lane's pre-t* subagents BEFORE acquiring the
         # lane/root slot). Buffered here and folded into ``outstanding`` at
@@ -104,15 +105,21 @@ class SessionTreeRegistry:
         self._late_events: int = 0
 
     def set_drain_callback(
-        self, callback: Callable[[str, PhaseRuntimeKey], None] | None
+        self,
+        callback: Callable[[str, PhaseRuntimeKey], None] | None,
+        *,
+        on_open: Callable[[str, PhaseRuntimeKey], None] | None = None,
     ) -> None:
         """Register the callback fired (with ``root_corr, phase``) when a tree
         drains and its slot is released during normal operation.
 
         Used by the strategy to recycle the freed lane into a fresh root. NOT
         fired by :meth:`release_all` (teardown must not start new sessions).
+        ``on_open`` optionally observes actual slot acquisition for workflow
+        cohorts. Replacing this registration also replaces its admission observer.
         """
         self._on_drain = callback
+        self._on_open = on_open
 
     def open_tree(
         self, root_corr: str, phase: PhaseRuntimeKey, *, root_pending: bool
@@ -134,8 +141,10 @@ class SessionTreeRegistry:
             # outstanding count is authoritative). Should not happen with
             # correct wiring; log so a regression is visible.
             _logger.warning(
-                lambda: f"open_tree for already-open tree root_corr={root_corr!r}; "
-                "ignoring duplicate"
+                lambda: (
+                    f"open_tree for already-open tree root_corr={root_corr!r}; "
+                    "ignoring duplicate"
+                )
             )
             return
         state = _TreeState(phase=phase, root_pending=root_pending)
@@ -145,6 +154,8 @@ class SessionTreeRegistry:
         self._trees[root_corr] = state
         if len(self._trees) > self._peak_open:
             self._peak_open = len(self._trees)
+        if self._on_open is not None:
+            self._on_open(root_corr, phase)
 
     @property
     def peak_open(self) -> int:
