@@ -1161,6 +1161,15 @@ class _TimingSettings(BaseSettings):
         "sglang_simulator transport. Coordinates workload and server virtual time.",
     )
 
+    SIMULATOR_WALL_TIMEOUT: float = Field(
+        default=30.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Physical seconds allowed for one simulator control/callback "
+        "operation. This operational guard does not advance virtual time or "
+        "change workload, request or phase deadlines.",
+    )
+
     CANCEL_DRAIN_TIMEOUT: float = Field(
         ge=1.0,
         le=300.0,
