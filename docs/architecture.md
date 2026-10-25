@@ -102,6 +102,15 @@ Completions precede deadlines at the same timestamp; phase deadlines precede
 new workload timers. Warmup and profiling share the server cache and clock but
 retain separate phase identities and statistics. Final result publication waits
 for the simulator's `FINISHED` acknowledgment, including native request cleanup.
+
+The adapter also preserves AgentX 1.0.12's branch lifecycle: a SPAWN child
+co-locates on its parent's worker for its first turn, then holds its own sticky
+session. Delayed child turns remain parked until their timer claims dispatch;
+the phase sending cutoff stops unclaimed children so parent joins can drain.
+Virtual dispatch uses the same credit, sampler, DAG and cutoff owners. It changes
+the clock and transport coordination, without substituting a fixed request
+schedule or a precomputed trace. Release-generated build identity is supplied
+separately from the retained official wheel's upstream identity.
 At grace expiry, phase completion waits for each cancellation terminal, worker
 return, and native accounting callback. Pending DAG joins are then cleaned up
 without waiting for workload timers beyond the cutoff.

@@ -5,7 +5,7 @@
 from importlib.metadata import PackageNotFoundError, version
 
 try:
-    __version__ = version("aiperf")
+    __version__ = version("agentx-harness")
 except PackageNotFoundError:
     __version__ = "unknown"
 
