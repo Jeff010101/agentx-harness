@@ -1348,6 +1348,10 @@ class BranchOrchestrator:
         if self._uses_virtual_time:
             if offset_ms:
                 await self._scheduler.runtime.sleep(offset_ms / 1000.0)
+            if self._cleaning_up:
+                return
+            if self._pending_delayed_children.pop(child.x_correlation_id, None) is None:
+                return  # abandoned at the phase's sending cutoff
             await self._dispatch_registered_child(child, parent_corr)
             return
         await self._sleep_offset_ms(offset_ms)

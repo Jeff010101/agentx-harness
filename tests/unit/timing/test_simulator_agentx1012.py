@@ -184,3 +184,68 @@ async def test_immediate_continuation_preserves_credit_with_each_clock(virtual) 
     if virtual:
         await runtime.drain_current()
         runtime.assert_drained()
+
+
+@pytest.mark.asyncio
+async def test_delayed_spawn_dispatched_before_cutoff_keeps_join_until_completion() -> (
+    None
+):
+    runtime = VirtualTimingRuntime()
+    scheduler = LoopScheduler(runtime=runtime)
+    issuer = Mock(
+        dispatch_first_turn=AsyncMock(return_value=True),
+        dispatch_join_turn=AsyncMock(return_value=False),
+    )
+    branches = BranchOrchestrator(
+        conversation_source=SimpleNamespace(dataset_metadata=None),
+        credit_issuer=issuer,
+        scheduler=scheduler,
+    )
+    pending = PendingBranchJoin(
+        parent_x_correlation_id="parent",
+        parent_conversation_id="parent-conversation",
+        parent_num_turns=2,
+        gated_turn_index=1,
+        is_blocked=True,
+        replay_deadline_elapsed=False,
+        outstanding={"spawn:child": PrereqState(expected=1, registered=True)},
+    )
+    branches._active_joins["parent"] = pending
+    branches._child_to_join["child"] = [
+        ChildJoinEntry(
+            parent_correlation_id="parent", gated_turn_index=1, prereq_key="spawn:child"
+        )
+    ]
+    branches._child_modes["child"] = ConversationBranchMode.SPAWN
+    branches._descendant_counts["parent"] = 1
+    branches.stats.children_spawned = 1
+    child = SimpleNamespace(
+        x_correlation_id="child", effective_root_correlation_id="parent"
+    )
+    branches._start_delayed_first_turn(child, 1000, "parent")
+    runtime.advance_to(1_000_000_000)
+    await runtime.drain_current()
+    issuer.dispatch_first_turn.assert_awaited_once_with(child)
+    assert not branches._pending_delayed_children
+
+    # The already-issued child remains active as the phase stops sending.
+    runtime.advance_to(2_000_000_000)
+    scheduler.cancel_all_pending()
+    await branches.expire_replay_deadlines()
+    assert branches._descendant_counts["parent"] == 1
+    assert pending.outstanding["spawn:child"].expected == 1
+    assert not pending.outstanding["spawn:child"].completed
+    assert branches.stats.children_spawned == 1
+    assert branches.stats.children_truncated == 0
+    issuer.dispatch_join_turn.assert_not_awaited()
+
+    await branches.on_child_leaf_reached("child")
+    await branches.on_child_leaf_reached("child")
+    await runtime.drain_current()
+    issuer.dispatch_join_turn.assert_awaited_once_with(pending)
+    assert branches.stats.children_completed == 1
+    assert not branches._child_to_join
+    assert not branches.has_pending_branch_work()
+    scheduler.cancel_all()
+    await runtime.drain_current()
+    runtime.assert_drained()
