@@ -294,7 +294,7 @@ Using the example file above, here is what happens on the wire:
 4. `branch-a`'s turn 0 has its authored `raw_messages` appended into the child's `turn_list`; the chat endpoint walks the list and concatenates every turn's messages, producing `[root sys, root user, root assistant_response, child user_a, child user_b]`. No system-prompt rewriting happens — accumulation is pure concatenation.
 5. `branch-a`'s turn 1 follows the same rule, now on top of the captured response from turn 0.
 6. `branch-b` runs concurrently with `branch-a`, independently.
-7. `root` has no further turns, so it terminates at the fork point. Its session is pinned in the worker cache (declared DAG branches) so late-arriving siblings can still seed their `turn_list` from it.
+7. `root` has no further turns, so it terminates at the fork point. Its session stays in the worker cache until every declared FORK child in the executable turns has seeded and every active child has joined. A fast sibling completing before another sibling's first credit arrives cannot discard the parent's history. If cancellation prevents a declared child from ever arriving, cached history can remain until worker-process shutdown; it does not extend the phase deadline.
 
 ## Reference: validation and error messages
 
@@ -342,6 +342,8 @@ Every DAG-shaped run publishes a `BranchStats` snapshot per credit phase, export
 ```
 
 Counters are mode-agnostic (the same shape applies to FORK-only, SPAWN-only, and mixed runs). Use `children_truncated` and `joins_suppressed` to detect when a `--request-count` cap interrupted the DAG mid-tree; they tally separately from `children_completed` so observability stays accurate. `children_delayed` counts SPAWN children whose turn-0 dispatch waited on a delay gate. Linear (non-DAG) runs leave `branch_stats` unset on `ProfileResults`.
+
+A child continuation with no delay or a zero delay dispatches immediately. Finishing the root conversation target does not turn that continuation into a delayed child that can be truncated at the sending cutoff. Positive delays still use the shared scheduler and its cutoff handling; request-count and cancellation limits still apply to immediate continuations.
 
 ## Reference: environment variables
 

@@ -4,6 +4,7 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+from msgspec.structs import replace
 
 from aiperf.common.enums import ConversationBranchMode, CreditPhase
 from aiperf.credit.messages import FirstToken
@@ -1115,15 +1116,7 @@ class TestStickyCreditRouterDAGChildren:
     async def test_spawn_child_does_not_create_parent_entry_or_leak_sessions(
         self, benchmark_run
     ) -> None:
-        """A SPAWN child whose parent's sticky entry was already evicted must
-        NOT auto-create a parent-keyed entry.
-
-        The auto-create path keyed by ``parent_correlation_id`` would mint a
-        fresh _StickyEntry and bump ``active_sessions`` with no eviction path
-        (final-turn eviction is gated on parent_correlation_id is None),
-        permanently leaking active_sessions and biasing load balancing.
-        With the parent entry gone, SPAWN children route least-loaded
-        instead."""
+        """A SPAWN child owns a releasable session without recreating its parent."""
         router = StickyCreditRouter(run=benchmark_run, service_id="test-router")
         router._router_client.send_to = AsyncMock()
         router._register_worker("worker-A")
@@ -1143,11 +1136,13 @@ class TestStickyCreditRouterDAGChildren:
         )
         await router.send_credit(spawn_child)
 
-        # No parent-keyed entry minted; active_sessions not leaked.
         assert "root" not in router._sticky_sessions
-        assert router._workers["worker-A"].active_sessions == 0
-        # Routed least-loaded to the only worker.
+        assert router._sticky_sessions["child1"].worker_id == "worker-A"
+        assert router._workers["worker-A"].active_sessions == 1
         assert router._router_client.send_to.call_args[0][0] == "worker-A"
+        await router.send_credit(replace(spawn_child, id=1000, turn_index=1))
+        assert "child1" not in router._sticky_sessions
+        assert router._workers["worker-A"].active_sessions == 0
 
     async def test_fork_child_does_not_create_parent_entry_when_absent(
         self, benchmark_run

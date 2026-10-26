@@ -1,0 +1,76 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+name: AgentX CPU regression
+
+on:
+  push:
+    branches:
+      - Jeff010101/final-replay-cleanup
+      - codex/v41-agentx-cpu-baseline-pr2
+      - codex/inferencex-107-simulator-20261021
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-tests:
+    if: github.repository == 'Jeff010101/agentx-harness'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUTF8: "1"
+      PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
+    steps:
+      - name: Require a hosted runner
+        shell: bash
+        run: test "$RUNNER_ENVIRONMENT" = github-hosted
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Record the exact tested source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          git rev-parse HEAD > tested-source.txt
+          git ls-tree -r HEAD >> tested-source.txt
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@v7
+      - name: Install the maintained CPU test environment
+        id: install
+        shell: bash
+        run: |
+          set -euo pipefail
+          make ci-install PYTHON_VERSION=${{ matrix.python-version }} 2>&1 | tee ci-install.log
+      - name: Unit, real ZMQ and component integration tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          make test-ci PYTHON_VERSION=${{ matrix.python-version }} 2>&1 | tee test-ci.log
+      - name: Mock-server integration tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          make integration-tests-ci PYTHON_VERSION=${{ matrix.python-version }} 2>&1 | tee integration-tests-ci.log
+      - name: Retain results and source identity
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentx-cpu-${{ matrix.python-version }}
+          path: |
+            tested-source.txt
+            ci-install.log
+            test-ci.log
+            integration-tests-ci.log
+            coverage.xml
+          if-no-files-found: warn

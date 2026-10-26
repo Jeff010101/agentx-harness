@@ -261,10 +261,12 @@ class RequestRateStrategy(AIPerfLoggerMixin):
         turn = TurnToSend.from_previous_credit(credit, meta)
 
         if credit.agent_depth > 0:
-            if meta.delay_ms is not None:
+            if meta.delay_ms is not None and meta.delay_ms > 0:
+                if self._branch_orchestrator is not None:
+                    self._branch_orchestrator.park_child_turn(credit.x_correlation_id)
                 self._scheduler.schedule_later(
                     meta.delay_ms / MILLIS_PER_SECOND,
-                    self._issue_child_continuation_or_release(turn, credit),
+                    self._issue_parked_child_continuation(turn, credit),
                 )
             else:
                 await self._issue_child_continuation_or_release(turn, credit)
@@ -278,6 +280,24 @@ class RequestRateStrategy(AIPerfLoggerMixin):
             )
         else:
             self._continuation_turns.put_nowait(turn)
+
+    async def _issue_parked_child_continuation(
+        self, turn: TurnToSend, child_returning_credit: Credit
+    ) -> None:
+        """Timer body for a delayed child continuation parked with the orchestrator.
+
+        If ``PhaseRunner`` cancelled this timer at the sending cutoff, the
+        orchestrator has already stopped the child, so nothing is dispatched.
+        """
+        if (
+            self._branch_orchestrator is None
+            or self._branch_orchestrator.try_claim_parked_child_turn(
+                child_returning_credit.x_correlation_id
+            )
+        ):
+            await self._issue_child_continuation_or_release(
+                turn, child_returning_credit
+            )
 
     async def _issue_child_continuation_or_release(
         self, turn: TurnToSend, child_returning_credit: Credit

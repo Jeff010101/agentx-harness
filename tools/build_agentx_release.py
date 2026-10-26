@@ -83,11 +83,14 @@ def prepare_source(source: Path, destination: Path, version: str) -> None:
 
     init_path = destination / "src/aiperf/__init__.py"
     init_text = init_path.read_text()
-    if init_text.count('version("aiperf")') != 1:
+    upstream_lookup = 'version("aiperf")'
+    agentx_lookup = 'version("agentx-harness")'
+    if (init_text.count(upstream_lookup), init_text.count(agentx_lookup)) not in (
+        (1, 0),
+        (0, 1),
+    ):
         raise ValueError("Upstream version lookup changed; review the release adapter")
-    init_path.write_text(
-        init_text.replace('version("aiperf")', 'version("agentx-harness")')
-    )
+    init_path.write_text(init_text.replace(upstream_lookup, agentx_lookup))
     commit = subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=source, text=True
     ).strip()

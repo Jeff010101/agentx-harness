@@ -36,9 +36,9 @@ from the parent session with no cross-process plumbing. The orchestrator
 bumps the parent's sticky refcount via
 ``StickyCreditRouter.register_child_routing`` before dispatching FORK-mode
 children and releases it via ``release_child_routing`` when each child
-terminates. SPAWN-mode children still carry ``parent_correlation_id`` so
-they co-locate on the parent's worker while that sticky entry is live,
-but they do not bump sticky refcounts (no ``register_child_routing``).
+terminates. SPAWN-mode children bump no parent refcount: their first turn
+lands on the parent's worker when its sticky entry is live, then the router
+pins them under their own correlation id until their final turn.
 
 Credit return flow
 ------------------
@@ -108,6 +108,7 @@ from aiperf.credit.dispatch import ChildDispatchResult
 
 if TYPE_CHECKING:
     from aiperf.common.loop_scheduler import LoopScheduler
+    from aiperf.timing.conversation_source import SampledSession
 
 __all__ = [
     "BranchOrchestrator",
@@ -307,9 +308,21 @@ class BranchOrchestrator:
         # SPAWN children whose recorded first request starts after the branch
         # spawn dispatch through the shared replay scheduler (see
         # _start_delayed_first_turn), so the system-idle cap can advance those
-        # timers uniformly with every other replay timer. The task set is a
-        # compatibility fallback for isolated callers that provide no scheduler.
-        self._delayed_dispatch_tasks: set[asyncio.Task] = set()
+        # timers uniformly with every other replay timer. The task map is a
+        # compatibility fallback for isolated callers that provide no scheduler,
+        # keyed by child x_correlation_id so the sending cutoff cancels only
+        # tasks still waiting out their offset, never one already dispatching.
+        self._delayed_dispatch_tasks: dict[str, asyncio.Task] = {}
+        # Delayed children whose turn-0 has not dispatched yet:
+        # child x_correlation_id -> (child session, parent x_correlation_id).
+        # Their bookkeeping is registered at spawn time, so when the phase
+        # stops sending (and cancels their timers) they must be rolled back
+        # explicitly; see _abandon_cancelled_child_dispatches.
+        self._pending_delayed_children: dict[str, tuple[Any, str]] = {}
+        # Children whose next turn waits on a strategy-owned scheduler timer
+        # (think-time continuations, snapshot-seeded turns). Stopped
+        # explicitly when the phase stops sending; see park_child_turn.
+        self._parked_child_turns: set[str] = set()
         # Drain observer: sync callback fired after state mutations that may
         # drain has_pending_branch_work() to False. Wired by
         # CreditCallbackHandler.set_branch_orchestrator to re-evaluate the
@@ -564,18 +577,25 @@ class BranchOrchestrator:
                         )
                         self.stats.children_errored += 1
                         continue
-                    result = ChildDispatchResult.normalize(
-                        await self._issuer.dispatch_first_turn(child_session)
-                    )
-                    if result.preserves_tracking:
-                        self.stats.children_spawned += 1
+                    if self._uses_virtual_time:
+                        self._scheduler.execute_async(
+                            self._dispatch_pre_session_child(child_session)
+                        )
                     else:
-                        # Terminal refusal before the child reaches the wire.
-                        # Exceptions are caught above; tally this as truncated.
-                        self.stats.children_truncated += 1
+                        await self._dispatch_pre_session_child(child_session)
                 self._pre_dispatched_branches.add(
                     (conv.conversation_id, branch.branch_id)
                 )
+
+    async def _dispatch_pre_session_child(self, child_session: SampledSession) -> None:
+        """Issue a pre-session child without delaying the phase deadline setup."""
+        result = ChildDispatchResult.normalize(
+            await self._issuer.dispatch_first_turn(child_session)
+        )
+        if result.preserves_tracking:
+            self.stats.children_spawned += 1
+        else:
+            self.stats.children_truncated += 1
 
     def _register_tree_descendants(self, root_corr: str | None, n: int) -> None:
         """Add ``n`` descendants to their session tree's outstanding count.
@@ -605,8 +625,8 @@ class BranchOrchestrator:
 
         FORK children sticky-route to the parent's worker; the refcount is
         balanced by ``_handle_child_done``'s ``release_child_routing`` on leaf.
-        SPAWN children also sticky-hit via ``parent_correlation_id`` while the
-        parent entry is live, but register no refcount.
+        SPAWN children register no refcount; the router pins them under their
+        own id instead.
         """
         if mode == ConversationBranchMode.FORK and self._sticky_router is not None:
             self._sticky_router.register_child_routing(parent_corr)
@@ -819,9 +839,8 @@ class BranchOrchestrator:
         FORK-mode children are routed to the parent's worker via sticky routing
         (``parent_correlation_id`` keying); the worker seeds each child's
         ``UserSession.turn_list`` from the parent's local session.
-        SPAWN-mode children also sticky-hit via ``parent_correlation_id`` while
-        the parent entry is live (no refcount bump); they route least-loaded
-        only after that entry is gone.
+        SPAWN-mode children start on the parent's worker when its entry is
+        live, then stay pinned under their own correlation id.
         """
         if self._cleaning_up:
             return False
@@ -1030,6 +1049,10 @@ class BranchOrchestrator:
                 offset_ms = 0.0
             if offset_ms > 0.0:
                 self._start_delayed_first_turn(child, offset_ms, parent_corr)
+            elif self._uses_virtual_time:
+                self._scheduler.execute_async(
+                    self._dispatch_registered_child(child, parent_corr)
+                )
             else:
                 immediate_children.append(child)
 
@@ -1261,6 +1284,7 @@ class BranchOrchestrator:
         same uniform system-idle advancement as turn and join timers. Isolated
         callers without a scheduler retain the legacy task/sleep fallback.
         """
+        self._pending_delayed_children[child.x_correlation_id] = (child, parent_corr)
         if self._scheduler is not None:
             self._scheduler.schedule_later(
                 offset_ms / 1000.0,
@@ -1269,16 +1293,48 @@ class BranchOrchestrator:
             )
             self.stats.children_delayed += 1
             return
+        child_corr = child.x_correlation_id
         task = asyncio.create_task(
             self._dispatch_first_turn_after_offset(child, offset_ms, parent_corr)
         )
-        self._delayed_dispatch_tasks.add(task)
-        task.add_done_callback(self._delayed_dispatch_tasks.discard)
+        self._delayed_dispatch_tasks[child_corr] = task
+        task.add_done_callback(
+            lambda done: self._forget_delayed_dispatch_task(child_corr, done)
+        )
         self.stats.children_delayed += 1
+
+    def _forget_delayed_dispatch_task(
+        self, child_corr: str, task: asyncio.Task
+    ) -> None:
+        if self._delayed_dispatch_tasks.get(child_corr) is task:
+            del self._delayed_dispatch_tasks[child_corr]
 
     async def _sleep_offset_ms(self, offset_ms: float) -> None:
         """Sleep out a dispatch offset. Separate method so tests can gate it."""
         await asyncio.sleep(offset_ms / 1000.0)
+
+    @property
+    def _uses_virtual_time(self) -> bool:
+        return (
+            self._scheduler is not None and self._scheduler.runtime.is_virtual is True
+        )
+
+    async def _dispatch_registered_child(
+        self, child: SampledSession, parent_corr: str
+    ) -> None:
+        """Wait for capacity without holding the parent's bookkeeping lock."""
+        if self._cleaning_up:
+            return
+        try:
+            result = await self._dispatch_first_turn(child)
+        except Exception as exc:
+            result = exc
+        if isinstance(result, BaseException) or (
+            ChildDispatchResult.normalize(result) is ChildDispatchResult.REJECTED
+        ):
+            async with self._parent_locks[parent_corr]:
+                self._rollback_failed_first_turn(child, result, parent_corr)
+                await self._finalize_failed_dispatches(parent_corr)
 
     async def _dispatch_first_turn_after_offset(
         self, child, offset_ms: float, parent_corr: str
@@ -1289,9 +1345,20 @@ class BranchOrchestrator:
         refusal. Dispatch and settlement run under the parent lock, matching
         the intercept path's locking.
         """
+        if self._uses_virtual_time:
+            if offset_ms:
+                await self._scheduler.runtime.sleep(offset_ms / 1000.0)
+            if self._cleaning_up:
+                return
+            if self._pending_delayed_children.pop(child.x_correlation_id, None) is None:
+                return  # abandoned at the phase's sending cutoff
+            await self._dispatch_registered_child(child, parent_corr)
+            return
         await self._sleep_offset_ms(offset_ms)
         if self._cleaning_up:
             return
+        if self._pending_delayed_children.pop(child.x_correlation_id, None) is None:
+            return  # abandoned at the phase's sending cutoff
         async with self._parent_locks[parent_corr]:
             try:
                 result = await self._dispatch_first_turn(child)
@@ -1492,6 +1559,63 @@ class BranchOrchestrator:
         await self._release_blocked_join(pending)
         self._notify_drain()
 
+    def park_child_turn(self, child_x_correlation_id: str) -> None:
+        """Record that a child's next turn is waiting on a scheduler timer.
+
+        ``PhaseRunner`` cancels the shared scheduler when the phase stops
+        sending, which closes such a timer without running it. The child then
+        never returns another credit or reaches ``on_child_stopped``, and its
+        bookkeeping keeps ``has_pending_branch_work()`` True until the grace
+        period expires. ``expire_replay_deadlines`` stops every child still
+        parked at that boundary.
+        """
+        self._parked_child_turns.add(child_x_correlation_id)
+
+    def try_claim_parked_child_turn(self, child_x_correlation_id: str) -> bool:
+        """Claim a parked child turn as its timer fires.
+
+        Returns False when the child was already stopped at the sending
+        cutoff, in which case the turn must not be dispatched.
+        """
+        if child_x_correlation_id not in self._parked_child_turns:
+            return False
+        self._parked_child_turns.discard(child_x_correlation_id)
+        return True
+
+    async def _abandon_cancelled_child_dispatches(self) -> None:
+        """Release children whose next dispatch was cancelled with the scheduler.
+
+        Called once the phase stops sending. ``PhaseRunner`` cancels the
+        shared scheduler at that boundary, which closes each pending timer
+        without running it, so neither the rollback inside
+        ``_dispatch_first_turn_after_offset`` nor a strategy's refusal path
+        executes, and the child's bookkeeping would keep
+        ``has_pending_branch_work()`` True until the grace period expires.
+        Delayed turn-0 children get the rollback a post-cutoff dispatch
+        refusal would have produced; children parked between turns are
+        stopped as if their continuation had been refused.
+        """
+        parked = list(self._parked_child_turns)
+        self._parked_child_turns.clear()
+        for child_corr in parked:
+            await self.on_child_stopped(child_corr)
+        if not self._pending_delayed_children:
+            return
+        by_parent: dict[str, list[Any]] = defaultdict(list)
+        for child_corr, (child, parent_corr) in self._pending_delayed_children.items():
+            by_parent[parent_corr].append(child)
+            task = self._delayed_dispatch_tasks.pop(child_corr, None)
+            if task is not None:
+                task.cancel()
+        self._pending_delayed_children.clear()
+        for parent_corr, children in by_parent.items():
+            async with self._parent_locks[parent_corr]:
+                for child in children:
+                    self._rollback_failed_first_turn(
+                        child, ChildDispatchResult.REJECTED, parent_corr
+                    )
+                await self._finalize_failed_dispatches(parent_corr)
+
     async def expire_replay_deadlines(self) -> None:
         """Drain active joins after phase scheduling has stopped.
 
@@ -1501,7 +1625,10 @@ class BranchOrchestrator:
         and let the issuer's normal stop condition suppress it once its child
         condition is also complete. This preserves the two-condition join
         state machine without leaving cancelled timers as phantom DAG work.
+        Delayed child dispatches cancelled at the same boundary are rolled
+        back first so the joins they gated can drain.
         """
+        await self._abandon_cancelled_child_dispatches()
         releasable: list[PendingBranchJoin] = []
         for parent_corr, pending in list(self._active_joins.items()):
             pending.replay_deadline_elapsed = True
@@ -1563,6 +1690,13 @@ class BranchOrchestrator:
 
     async def _release_blocked_join(self, pending: PendingBranchJoin) -> None:
         """Dispatch the parent's gated turn and update stats."""
+        if self._uses_virtual_time:
+            self._scheduler.execute_async(self._dispatch_released_join(pending))
+        else:
+            await self._dispatch_released_join(pending)
+
+    async def _dispatch_released_join(self, pending: PendingBranchJoin) -> None:
+        """Issue an already released join after capacity becomes available."""
         assert pending.gated_turn_index is not None, (
             "_release_blocked_join called without a gated_turn_index"
         )
@@ -1775,9 +1909,11 @@ class BranchOrchestrator:
             return
         self._cleaning_up = True
         self._drain_observer = None
-        for task in self._delayed_dispatch_tasks:
+        for task in self._delayed_dispatch_tasks.values():
             task.cancel()
         self._delayed_dispatch_tasks.clear()
+        self._pending_delayed_children.clear()
+        self._parked_child_turns.clear()
         s = self.stats
         logger.info(
             "BranchOrchestrator stats: spawned=%d completed=%d errored=%d "

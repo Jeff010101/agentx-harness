@@ -85,6 +85,14 @@ class UserSession(AIPerfBaseModel):
         "``release_fork_child``. Eviction (``evict_if_unpinned``) is a "
         "no-op while this is non-zero.",
     )
+    fork_children_pending: int = Field(
+        default=0,
+        ge=0,
+        description="Declared FORK children in executable turns that have not "
+        "seeded yet. Stamped at creation before branch metadata may be dropped; "
+        "keeps an early sibling's completion from evicting the parent before "
+        "the remaining siblings copy its history.",
+    )
     pending_fork_eviction: bool = Field(
         default=False,
         description="When True, the parent's terminal turn has already "
@@ -222,6 +230,17 @@ class UserSessionManager:
             or ConversationContextMode.DELTAS_WITHOUT_RESPONSES
         )
         is_fork_parent = _compute_is_fork_parent(conversation)
+        executable_branches = {
+            branch_id
+            for turn in conversation.turns[:num_turns]
+            for branch_id in turn.branch_ids
+        }
+        fork_children_pending = sum(
+            len(branch.child_conversation_ids)
+            for branch in conversation.branches
+            if branch.mode == ConversationBranchMode.FORK
+            and branch.branch_id in executable_branches
+        )
         # FORK seeding hands the parent's accumulated ``turn_list`` to
         # the child. ``MESSAGE_ARRAY_WITH_RESPONSES`` replaces ``turn_list``
         # on every ``advance_turn`` (see below), which would discard the
@@ -263,6 +282,7 @@ class UserSessionManager:
             turn_list=[],
             context_mode=context_mode,
             is_fork_parent=is_fork_parent,
+            fork_children_pending=fork_children_pending,
             parent_correlation_id=parent_correlation_id,
             branch_mode=branch_mode if parent_correlation_id is not None else None,
         )
@@ -312,6 +332,7 @@ class UserSessionManager:
                 f"{x_correlation_id!r} (parent already evicted before FORK child arrived)"
             )
         session.fork_refcount += 1
+        session.fork_children_pending = max(0, session.fork_children_pending - 1)
 
     def seed_from_parent(
         self, child_x_correlation_id: str, parent_x_correlation_id: str
@@ -347,22 +368,28 @@ class UserSessionManager:
 
         When ``pending_fork_eviction`` is set (parent's terminal turn
         has already fired but was waiting for children to land) and
-        the refcount drops to 0, the session is evicted in the same
-        call — there is no other code path that will collect it.
+        the refcount drops to 0 after every declared child has seeded, the
+        session is evicted in the same call. A sibling may finish before
+        the next sibling's first credit reaches this worker.
         """
         session = self._cache.get(x_correlation_id)
         if session is None:
             return
         session.fork_refcount = max(0, session.fork_refcount - 1)
-        if session.fork_refcount == 0 and session.pending_fork_eviction:
+        if (
+            session.fork_refcount == 0
+            and session.fork_children_pending == 0
+            and session.pending_fork_eviction
+        ):
             self._cache.pop(x_correlation_id, None)
 
     def evict_if_unpinned(self, x_correlation_id: str) -> None:
         """Evict the session only if its FORK refcount has reached 0.
 
-        Refcount-aware sibling of ``evict``: callers on the FORK path
-        use this so pinned parents stay resident until the last child
-        joins. Unknown sessions are a no-op.
+        Callers on the terminal FORK path defer eviction while active or
+        not-yet-seeded children still need the parent. The deferred request
+        is remembered even when the final parent turn declares no new forks.
+        Unknown sessions are a no-op.
 
         Sessions with ``pending_fork_eviction = True`` ALSO stay
         resident at refcount==0 — their parent's terminal turn already
@@ -374,7 +401,8 @@ class UserSessionManager:
         session = self._cache.get(x_correlation_id)
         if session is None:
             return
-        if session.fork_refcount > 0:
+        if session.fork_refcount > 0 or session.fork_children_pending > 0:
+            session.pending_fork_eviction = True
             return
         if session.pending_fork_eviction:
             return
