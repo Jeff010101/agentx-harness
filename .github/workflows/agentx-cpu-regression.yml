@@ -7,6 +7,7 @@ on:
     branches:
       - Jeff010101/final-replay-cleanup
       - codex/v41-agentx-cpu-baseline-pr2
+      - codex/inferencex-107-simulator-20261021
 
 permissions:
   contents: read
