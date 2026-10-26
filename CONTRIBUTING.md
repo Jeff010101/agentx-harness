@@ -16,6 +16,9 @@ upstream. `tools/build_agentx_release.py` copies Git-tracked files to a temporar
 directory and changes only that copy's distribution name, version, self-referencing
 extras, entry point, and runtime version lookup. The release also requires
 `datasets>=4.7.0` for the public AgentX corpora's heterogeneous JSON fields.
+Core development installs report the installed `aiperf` distribution version;
+the isolated release copy reports the installed `agentx-harness` version. The
+adapter rejects missing or ambiguous version lookup sites.
 The standalone `src/agentx_cli.py`
 wrapper delegates to the existing AIPerf commands.
 

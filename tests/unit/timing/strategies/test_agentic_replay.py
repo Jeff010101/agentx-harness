@@ -1543,6 +1543,7 @@ async def test_profiling_snapshot_dispatches_inflight_child_and_seeds_join():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     scheduler = MagicMock()
     scheduler.schedule_later.side_effect = (
         lambda _delay, coro, **_kwargs: asyncio.create_task(coro)
@@ -1675,6 +1676,7 @@ async def test_profiling_burst_normalizes_offsets_first_request_fires_at_zero():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     scheduled: list[tuple[float, object]] = []
 
     def fake_schedule_later(delay, coro, **_kwargs):
@@ -1793,6 +1795,7 @@ async def test_profiling_global_anchor_preserves_subagent_spacing():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     scheduled: list[tuple[float, object]] = []
     scheduler = MagicMock()
     scheduler.schedule_later.side_effect = (
@@ -2008,6 +2011,7 @@ async def test_profiling_gated_parent_not_dispatched_child_profiles():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     branch_orchestrator = MagicMock()
 
     cfg = MagicMock()
@@ -2525,7 +2529,10 @@ async def test_handle_credit_return_honors_delay_ms_via_scheduler():
 
 
 @pytest.mark.asyncio
-async def test_global_idle_cap_shifts_real_delayed_continuation_to_ten_seconds():
+@pytest.mark.parametrize("elapsed_since_schedule", [0.0, 0.25])
+async def test_global_idle_cap_shifts_real_delayed_continuation_to_ten_seconds(
+    monkeypatch: pytest.MonkeyPatch, elapsed_since_schedule: float
+) -> None:
     """Exercise the production scheduler and strategy together."""
     trajectories = [Trajectory(conversation_id="trace_0", start_turn_index=0)]
     dataset = DatasetMetadata(
@@ -2562,14 +2569,18 @@ async def test_global_idle_cap_shifts_real_delayed_continuation_to_ten_seconds()
     )
     assert scheduler.pending_count == 1
 
-    strategy.enforce_system_idle_cap(in_flight_requests=0)
-    assert strategy._system_idle_jump_count == 1
-    assert strategy._system_idle_seconds_skipped == pytest.approx(90.0)
-
     handle, _ = next(iter(scheduler._handles.values()))
-    assert handle.when() - asyncio.get_running_loop().time() == pytest.approx(
-        10.0, abs=0.01
-    )
+    loop = asyncio.get_running_loop()
+    policy_now = handle.when() - 100.0 + elapsed_since_schedule
+    with monkeypatch.context() as clock:
+        clock.setattr(loop, "time", lambda: policy_now)
+        strategy.enforce_system_idle_cap(in_flight_requests=0)
+        assert strategy._system_idle_jump_count == 1
+        assert strategy._system_idle_seconds_skipped == pytest.approx(
+            90.0 - elapsed_since_schedule
+        )
+        handle, _ = next(iter(scheduler._handles.values()))
+        assert handle.when() - loop.time() == pytest.approx(10.0)
     issuer.issue_credit.assert_not_awaited()
     scheduler.cancel_all_pending()
 
@@ -3417,6 +3428,7 @@ async def test_rootless_snapshot_acquires_exactly_one_lane_credit():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     issuer.acquire_lane_credit = AsyncMock(return_value=True)
 
     strategy, _, _, _ = _make_strategy(

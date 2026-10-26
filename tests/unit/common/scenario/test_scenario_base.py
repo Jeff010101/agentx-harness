@@ -13,6 +13,44 @@ from aiperf.common.scenario.base import (
 from aiperf.plugin.enums import TimingMode
 
 
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_environment_defaults_reject_non_finite_scalars(value: float) -> None:
+    with pytest.raises(ValidationError) as error:
+        ScenarioSpec(
+            name="finite-defaults",
+            timing_mode=TimingMode.REQUEST_RATE,
+            require_ignore_eos=True,
+            forbid_input_truncation=True,
+            require_loader="weka_trace",
+            min_benchmark_duration_seconds=900,
+            environment_defaults={"HTTP": {"DELAY": value}},
+        )
+    assert all(
+        item["loc"][:3] == ("environment_defaults", "HTTP", "DELAY")
+        for item in error.value.errors()
+    )
+    assert any("must be finite" in item["msg"] for item in error.value.errors())
+
+
+@pytest.mark.parametrize("value", [0, 1.25, -1.25, False, "auto"])
+def test_environment_defaults_preserve_finite_scalar_types(
+    value: str | int | float | bool,
+) -> None:
+    spec = ScenarioSpec(
+        name="finite-defaults",
+        timing_mode=TimingMode.REQUEST_RATE,
+        require_ignore_eos=True,
+        forbid_input_truncation=True,
+        require_loader="weka_trace",
+        min_benchmark_duration_seconds=900,
+        environment_defaults={"HTTP": {"VALUE": value}},
+    )
+
+    actual = spec.environment_defaults["HTTP"]["VALUE"]
+    assert actual == value
+    assert type(actual) is type(value)
+
+
 def test_scenario_spec_is_frozen() -> None:
     spec = ScenarioSpec(
         name="test",

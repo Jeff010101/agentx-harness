@@ -669,7 +669,12 @@ class PhaseRunner(TaskManagerMixin):
         finalize_phase = getattr(strategy, "finalize_phase", None)
         if finalize_phase is not None:
             await finalize_phase()
-        if self._preserve_replay_gate_until_finalize(strategy):
+        # Returns can re-arm root-idle timers after sending has stopped.
+        if (
+            self._preserve_replay_gate_until_finalize(strategy)
+            or not self._config.seamless
+            or is_final_phase
+        ):
             await self._credit_issuer.replay_gate.cancel(notify_refused=False)
 
         # Strategy-specific phase teardown BACKSTOP. Skipped when the live
