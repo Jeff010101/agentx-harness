@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import ConfigDict, Field
 
 from aiperf.common.enums import CacheBustTarget
+from aiperf.common.finite import FiniteFloat
 from aiperf.common.models import AIPerfBaseModel
 from aiperf.plugin.enums import TimingMode
 
@@ -21,7 +22,7 @@ class ScenarioSpec(AIPerfBaseModel):
         default_factory=dict,
         description="Defaults for omitted CLI flags, applied before config conversion.",
     )
-    environment_defaults: dict[str, dict[str, str | int | float | bool]] = Field(
+    environment_defaults: dict[str, dict[str, str | int | FiniteFloat | bool]] = Field(
         default_factory=dict,
         description="Runtime defaults grouped by Environment subsystem; explicit settings win.",
     )

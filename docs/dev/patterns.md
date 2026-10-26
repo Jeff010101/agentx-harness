@@ -31,6 +31,8 @@ to own those values.
 settings subsystems and scalar fields. The context uses each subsystem's
 environment prefix and Pydantic validation, preserves explicitly configured
 values, and sets missing environment variables for newly spawned children.
+Numeric scenario defaults must be finite; NaN and infinity are rejected when
+the `ScenarioSpec` is constructed, before subsystem-specific validation.
 Previous parent settings and inserted variables are restored on exit, including
 exceptions. This process-wide context is intended for sequential local profiling;
 it does not configure independently launched services or Kubernetes pods.
