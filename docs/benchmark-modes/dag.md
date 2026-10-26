@@ -343,6 +343,8 @@ Every DAG-shaped run publishes a `BranchStats` snapshot per credit phase, export
 
 Counters are mode-agnostic (the same shape applies to FORK-only, SPAWN-only, and mixed runs). Use `children_truncated` and `joins_suppressed` to detect when a `--request-count` cap interrupted the DAG mid-tree; they tally separately from `children_completed` so observability stays accurate. `children_delayed` counts SPAWN children whose turn-0 dispatch waited on a delay gate. Linear (non-DAG) runs leave `branch_stats` unset on `ProfileResults`.
 
+A child continuation with no delay or a zero delay dispatches immediately. Finishing the root conversation target does not turn that continuation into a delayed child that can be truncated at the sending cutoff. Positive delays still use the shared scheduler and its cutoff handling; request-count and cancellation limits still apply to immediate continuations.
+
 ## Reference: environment variables
 
 - `AIPERF_DAG_FAIL_FAST` (default `false`): when `true`, the first DAG child error aborts the whole run — pending siblings are cancelled, the error raises to `PhaseRunner`, and the phase terminates. Default `false`: the orchestrator counts the error in `BranchStats.children_errored`, releases the join slot, drains pending siblings, and continues the run. Set to `1` for strict CI assertions.

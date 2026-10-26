@@ -261,7 +261,7 @@ class RequestRateStrategy(AIPerfLoggerMixin):
         turn = TurnToSend.from_previous_credit(credit, meta)
 
         if credit.agent_depth > 0:
-            if meta.delay_ms is not None:
+            if meta.delay_ms is not None and meta.delay_ms > 0:
                 if self._branch_orchestrator is not None:
                     self._branch_orchestrator.park_child_turn(credit.x_correlation_id)
                 self._scheduler.schedule_later(
