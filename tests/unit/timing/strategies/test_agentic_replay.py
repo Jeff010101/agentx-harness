@@ -1543,6 +1543,7 @@ async def test_profiling_snapshot_dispatches_inflight_child_and_seeds_join():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     scheduler = MagicMock()
     scheduler.schedule_later.side_effect = (
         lambda _delay, coro, **_kwargs: asyncio.create_task(coro)
@@ -1675,6 +1676,7 @@ async def test_profiling_burst_normalizes_offsets_first_request_fires_at_zero():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     scheduled: list[tuple[float, object]] = []
 
     def fake_schedule_later(delay, coro, **_kwargs):
@@ -1793,6 +1795,7 @@ async def test_profiling_global_anchor_preserves_subagent_spacing():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     scheduled: list[tuple[float, object]] = []
     scheduler = MagicMock()
     scheduler.schedule_later.side_effect = (
@@ -2008,6 +2011,7 @@ async def test_profiling_gated_parent_not_dispatched_child_profiles():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     branch_orchestrator = MagicMock()
 
     cfg = MagicMock()
@@ -3417,6 +3421,7 @@ async def test_rootless_snapshot_acquires_exactly_one_lane_credit():
 
     issuer = AsyncMock()
     issuer.issue_credit.side_effect = capture
+    issuer.dispatch_child_turn.side_effect = capture
     issuer.acquire_lane_credit = AsyncMock(return_value=True)
 
     strategy, _, _, _ = _make_strategy(
