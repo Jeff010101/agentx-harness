@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - Jeff010101/final-replay-cleanup
+      - codex/v41-agentx-cpu-baseline-pr2
 
 permissions:
   contents: read
