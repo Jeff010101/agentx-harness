@@ -6,6 +6,7 @@ on:
   push:
     branches:
       - Jeff010101/final-replay-cleanup
+      - codex/v41-agentx-cpu-baseline-pr2
 
 permissions:
   contents: read
@@ -20,6 +21,7 @@ jobs:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]
     env:
+      PYTHONFAULTHANDLER: "1"
       PYTHONUTF8: "1"
       PYTEST_XDIST_AUTO_NUM_WORKERS: "4"
     steps:
