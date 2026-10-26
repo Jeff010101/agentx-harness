@@ -108,7 +108,7 @@ async def test_offset_child_uses_shared_scheduler_for_idle_cap(
     await orch.intercept(_mk_credit("parent", "P", 0))
 
     assert scheduler.pending_count == 1
-    assert orch._delayed_dispatch_tasks == set()
+    assert orch._delayed_dispatch_tasks == {}
     issuer.dispatch_first_turn.assert_not_awaited()
     assert scheduler.cap_pending_delay(0.01) == pytest.approx(3.99, abs=0.02)
     handle, _ = next(iter(scheduler._handles.values()))
@@ -352,7 +352,7 @@ async def test_cleanup_cancels_sleeping_dispatch():
     await _tick()
 
     issuer.dispatch_first_turn.assert_not_awaited()
-    assert orch._delayed_dispatch_tasks == set()
+    assert orch._delayed_dispatch_tasks == {}
 
 
 @pytest.mark.asyncio
