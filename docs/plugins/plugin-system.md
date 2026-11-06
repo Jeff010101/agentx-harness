@@ -201,6 +201,64 @@ ITL and throughput use the existing metric pipeline. TTST, inter-chunk latency,
 TTFO, HTTP setup, and network tracing are unavailable because generation bounds
 do not describe physical chunk delivery or reasoning-token boundaries.
 
+### Experimental finite native workloads
+
+The separate fixed driver uses Ready/Grant v1 and SGLang's native `/generate`
+endpoint with exact post-template token IDs. It does not reinterpret fixed
+requests as agentic trajectories or widen the `aiperf profile` transport's
+supported timing modes. Existing AgentX replay remains unchanged.
+
+Prepare a JSONL prompt bank containing one `{"input_ids": [11, 12, 13]}` object
+per line. Keep the original bank with the results: no tokenizer or chat template
+is applied. A plan selects ordered bank indices and explicit phase ownership:
+
+```json
+{
+  "run_id": "fixed-control-unique-per-server",
+  "sampling_params": {"temperature": 0},
+  "phases": [
+    {"name": "warmup", "concurrency": 1, "request_indices": [2, 2],
+     "input_tokens": 3, "output_tokens": 8},
+    {"name": "profiling", "concurrency": 1, "request_indices": [0, 1],
+     "input_tokens": 3, "output_tokens": 8, "expected_cached_tokens": 0}
+  ]
+}
+```
+
+This example needs three distinct prompt-bank rows and is a short functional
+control, not a full benchmark. Each phase refills up to its concurrency when a
+completed terminal and its HTTP response both arrive. The next phase starts
+only after the entire previous population drains. To reproduce a ten-wave fixed
+population, list exactly `10 * concurrency` formal indices; these are completion
+driven requests, not ten synchronized batches.
+
+```bash
+uv run python -m aiperf.simulation.fixed_cli \
+  --plan fixed-plan.json --requests prompts.jsonl \
+  --url http://127.0.0.1:30000 \
+  --coordinator tcp://127.0.0.1:30001 --output /path/to/new-fixed-run
+```
+
+Use a fresh server/cache and a new output directory for every independent case.
+For prefix-cache studies, explicitly add a `prepare` phase with the intended
+prefix token IDs, `input_tokens=P`, one output token and the appropriate cache
+assertion. Formal rows must contain those same prefixes plus their original
+suffixes; set their `expected_cached_tokens=P`. The client validates the observed
+hit rather than assigning it. It does not generate, pad or repair input recipes.
+Warmup cache expectations are optional because repeated warmup prompts can hit.
+
+`events.jsonl` retains control rounds and native timing snapshots. `result.json`
+is written only after every request and the final `FINISHED` acknowledgement.
+Only profiling requests enter its metrics; TPOT uses output tokens minus one,
+and mean interactivity is the reciprocal of mean TPOT. Single-token populations
+have no TPOT/interactivity. Throughput uses input plus output tokens over the
+first profiling submission to last terminal, without GPU normalization. Physical
+HTTP time is never used as a generation measurement. Errors retain
+`failure.json` and partial events without retry or a success result.
+
+This experimental client does not launch servers, select predictor/data or
+acceptance policies, certify timing data, or establish full-workload accuracy.
+
 ### Processing Categories
 
 | Category | Enum | Description |

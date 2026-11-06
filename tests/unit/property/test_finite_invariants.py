@@ -333,6 +333,9 @@ def _load_or_init_metric_baseline(current: list[str]) -> list[str]:
 # are not FiniteFloat. Most are: integer enums, free-form pass-through ints,
 # or fields validated downstream rather than at field level.
 NUMERIC_BOUNDS_WHITELIST: set[str] = {
+    # A prompt-index container, not a scalar. Each index is a strict integer
+    # with ge=0; validate_inputs checks its upper bound against the prompt bank.
+    "FixedPhase.request_indices",
     # SweepVariation.index: zero-based index, bounded by sweep size at
     # runtime; no useful field-level upper bound.
     "SweepVariation.index",
