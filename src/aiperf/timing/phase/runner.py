@@ -1293,9 +1293,18 @@ class PhaseRunner(TaskManagerMixin):
         done-callback only discards it from the task set, so an exception it
         raises is otherwise never retrieved and the wait hangs forever (#1041).
         """
-        event_task = asyncio.ensure_future(self._runtime.wait_event(event))
+        event_task = self._runtime.create_task(self._runtime.wait_event(event))
+        completed = asyncio.Event()
+
+        def wake_waiter(_task: asyncio.Task) -> None:
+            completed.set()
+
+        event_task.add_done_callback(wake_waiter)
+        task.add_done_callback(wake_waiter)
         try:
-            await asyncio.wait({event_task, task}, return_when=asyncio.FIRST_COMPLETED)
+            # The event waiter owns its activity; this parent must also become
+            # blocked so a cooperative clock can advance delayed warmup credits.
+            await self._runtime.wait_event(completed)
             # A failure wins over a same-tick event completion; FIRST_COMPLETED
             # only guarantees one of the two is done, so task.done() is checked
             # explicitly rather than assumed from event_task's state.
@@ -1306,11 +1315,15 @@ class PhaseRunner(TaskManagerMixin):
             ):
                 raise exc
             if event_task.done():
+                event_task.result()
                 return
-            await event_task
+            await self._runtime.wait_event(event)
         finally:
+            task.remove_done_callback(wake_waiter)
+            event_task.remove_done_callback(wake_waiter)
             if not event_task.done():
                 event_task.cancel()
+            await asyncio.gather(event_task, return_exceptions=True)
 
     async def _progress_report_loop(self) -> None:
         """Publish phase progress stats at regular intervals.

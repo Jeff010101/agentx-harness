@@ -344,6 +344,11 @@ With `--num-users 15` and `--user-centric-rate 1.0`, each user has 15 seconds be
 
 ### Warmup Options
 
+With coordinated virtual timing, count-driven warmup waits for the scheduled
+priming credits even after dispatch setup returns. Delayed credits retain their
+original virtual deadlines. Dispatch failures propagate instead of being
+treated as successful warmup completion.
+
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `--warmup-request-count` | int | None | Max warmup requests; mutually exclusive with `--num-warmup-sessions` |
