@@ -371,6 +371,35 @@ async def test_grant_without_http_terminal_fails_instead_of_releasing_callback(
     callback.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "timeout,completes",
+    [
+        param(0.001, False, id="short-physical-guard-expires"),
+        param(1.0, True, id="configured-physical-guard-allows-work"),
+    ],
+)  # fmt: skip
+async def test_wall_guard_budget_does_not_advance_virtual_time(
+    setup_router: tuple[Any, ...],
+    timeout: float,
+    completes: bool,
+) -> None:
+    router, _, _, runtime = setup_router
+    router._timeout_s = timeout
+    runtime.now = 123
+    ready = asyncio.Event()
+    handle = asyncio.get_running_loop().call_later(0.02, ready.set)
+    try:
+        if completes:
+            await router._guard(ready.wait())
+        else:
+            with pytest.raises(SimulationError, match="did not settle"):
+                await router._guard(ready.wait())
+    finally:
+        handle.cancel()
+    assert runtime.now_ns() == 123
+
+
 def test_request_identity_separates_warmup_phases_and_credit_prefixes() -> None:
     rids = {
         request_id("run", phase, number)

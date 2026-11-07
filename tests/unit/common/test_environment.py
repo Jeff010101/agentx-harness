@@ -12,7 +12,39 @@ from aiperf.common.environment import (
     _Environment,
     _SearchPlannerSettings,
     _ServiceSettings,
+    _TimingSettings,
 )
+
+
+def test_simulator_wall_timeout_keeps_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("AIPERF_TIMING_SIMULATOR_WALL_TIMEOUT", raising=False)
+    assert _TimingSettings().SIMULATOR_WALL_TIMEOUT == 30.0
+
+
+def test_simulator_wall_timeout_accepts_explicit_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AIPERF_TIMING_SIMULATOR_WALL_TIMEOUT", "900")
+    assert _TimingSettings().SIMULATOR_WALL_TIMEOUT == 900.0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        param("0", id="zero"),
+        param("-1", id="negative"),
+        param("nan", id="nan"),
+        param("inf", id="infinity"),
+        param("-inf", id="negative-infinity"),
+    ],
+)  # fmt: skip
+def test_simulator_wall_timeout_rejects_unbounded_or_nonpositive_values(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("AIPERF_TIMING_SIMULATOR_WALL_TIMEOUT", value)
+    with pytest.raises(ValueError, match="SIMULATOR_WALL_TIMEOUT"):
+        _TimingSettings()
 
 
 class TestServiceSettingsUvloopWindows:

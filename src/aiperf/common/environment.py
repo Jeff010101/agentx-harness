@@ -1275,6 +1275,15 @@ class _TimingSettings(BaseSettings):
         "sglang_simulator transport. Coordinates workload and server virtual time.",
     )
 
+    SIMULATOR_WALL_TIMEOUT: float = Field(
+        default=30.0,
+        gt=0.0,
+        allow_inf_nan=False,
+        description="Physical wall-clock seconds allowed for a simulator control exchange "
+        "or worker result to settle. Increase for CPU simulations with expensive native "
+        "steps; does not change virtual timestamps, phase duration or metric denominators.",
+    )
+
     CANCEL_DRAIN_TIMEOUT: float = Field(
         ge=1.0,
         le=300.0,

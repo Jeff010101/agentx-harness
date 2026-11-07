@@ -166,6 +166,7 @@ class TimingManager(BaseComponentService):
                 endpoint=endpoint,
                 runtime=runtime,
                 artifact_dir=self.run.artifact_dir,
+                timeout_s=Environment.TIMING.SIMULATOR_WALL_TIMEOUT,
             )
             credit_router = self._simulator
 
