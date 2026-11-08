@@ -359,6 +359,37 @@ async def test_virtual_idle_cap_preserves_predecessors_and_retries_blocked_timer
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("late_event", ["return", "idle_observation", "refusal"])
+async def test_cancelled_replay_gate_never_rearms_idle_watchdogs(
+    late_event: str,
+) -> None:
+    runtime = VirtualTimingRuntime()
+    scheduler = LoopScheduler(runtime=runtime)
+    coordinator = ReplayBarrierCoordinator(
+        _metadata(), scheduler=scheduler, root_idle_gap_cap_seconds=300.0
+    )
+    coordinator.activate()
+    coordinator.observe_issued(_credit("a"))
+
+    async def on_refused() -> None:
+        coordinator.complete(_credit("a"))
+
+    if late_event == "refusal":
+        await coordinator.submit(
+            _turn("d"), lambda: _record_issue([], "d"), on_refused=on_refused
+        )
+    runtime.advance_to(3_659_496_839_109)
+    await coordinator.cancel_pending(notify_refused=late_event == "refusal")
+    if late_event == "return":
+        coordinator.complete(_credit("a"))
+    elif late_event == "idle_observation":
+        coordinator.observe_idle_root("another-root")
+
+    assert runtime.next_deadline_ns is None
+    runtime.assert_drained()
+
+
+@pytest.mark.asyncio
 async def test_scalar_peak_would_slip_d_after_only_one_completion() -> None:
     coordinator = ReplayBarrierCoordinator(_metadata())
     coordinator.activate()

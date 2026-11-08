@@ -120,7 +120,10 @@ An optional `trace_idle_gap_cap_seconds` uses the virtual clock to limit observe
 whole-tree idle gaps during profiling. It advances only that runtime root's
 pending timers, retains their relative spacing and predecessor dependencies,
 and never rewrites recorded dataset timestamps or advances a tree with requests
-still in flight. It is distinct from the global system-idle cap.
+still in flight. It is distinct from the global system-idle cap. Cancelling the
+phase's replay gate permanently stops its idle watchdogs; late request terminals
+and refusal callbacks still update completion state without leaving new virtual
+timers after teardown.
 If coordinated execution fails, the timing manager requests cancellation with
 the original service error. The controller collects available records within
 a bounded timeout and exits nonzero without publishing phase success.
