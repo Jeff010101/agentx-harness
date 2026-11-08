@@ -14,6 +14,7 @@ from aiperf.common.models import (
     ReplayTurnReference,
     TurnMetadata,
 )
+from aiperf.common.virtual_timing_runtime import VirtualTimingRuntime
 from aiperf.credit.dispatch import ChildDispatchResult
 from aiperf.credit.structs import Credit, TurnToSend
 from aiperf.plugin.enums import DatasetSamplingStrategy
@@ -268,6 +269,124 @@ async def test_idle_watchdog_retries_when_advanced_turn_is_barrier_blocked() -> 
     assert asyncio.get_running_loop().time() - started < 0.10
     await coordinator.cancel_pending(notify_refused=False)
     scheduler.cancel_all()
+
+
+@pytest.mark.asyncio
+async def test_virtual_idle_cap_waits_for_last_return_and_keeps_other_tree() -> None:
+    runtime = VirtualTimingRuntime()
+    scheduler = LoopScheduler(runtime=runtime)
+    metadata = _metadata()
+    original_metadata = metadata.model_dump()
+    coordinator = ReplayBarrierCoordinator(
+        metadata, scheduler=scheduler, root_idle_gap_cap_seconds=300.0
+    )
+    coordinator.activate()
+    issued: list[tuple[str, int]] = []
+
+    async def issue(name: str, root: str) -> None:
+        issued.append((name, runtime.now_ns()))
+        coordinator.observe_issued(_credit(name, root))
+
+    scheduler.schedule_later(1000, issue("a", "one"), group_id="one")
+    scheduler.schedule_later(1200, issue("b", "one"), group_id="one")
+    scheduler.schedule_later(2000, issue("c", "two"), group_id="two")
+    coordinator.observe_issued(_credit("a", "one"))
+    coordinator.observe_issued(_credit("b", "one"))
+    coordinator.observe_issued(_credit("c", "two"))
+    try:
+        coordinator.complete(_credit("a", "one"))
+        assert runtime.next_deadline_ns == 1_000_000_000_000
+        runtime.advance_to(100_000_000_000)
+        coordinator.complete(_credit("b", "one"))
+        assert runtime.next_deadline_ns == 400_000_000_000
+        runtime.advance_to(400_000_000_000)
+        await asyncio.wait_for(runtime.drain_current(), timeout=1)
+        assert issued == [("a", 400_000_000_000)]
+        assert runtime.next_deadline_ns == 600_000_000_000
+        runtime.advance_to(600_000_000_000)
+        await asyncio.wait_for(runtime.drain_current(), timeout=1)
+        assert issued[-1] == ("b", 600_000_000_000)
+        assert runtime.next_deadline_ns == 2_000_000_000_000
+        assert metadata.model_dump() == original_metadata
+    finally:
+        coordinator.close_root("one")
+        coordinator.close_root("two")
+        await asyncio.gather(*scheduler.cancel_all(), return_exceptions=True)
+        await runtime.drain_current()
+        runtime.assert_drained()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cap", [0.0, 300.0])
+async def test_virtual_idle_cap_preserves_predecessors_and_retries_blocked_timer(
+    cap: float,
+) -> None:
+    runtime = VirtualTimingRuntime()
+    scheduler = LoopScheduler(runtime=runtime)
+    coordinator = ReplayBarrierCoordinator(
+        _metadata(), scheduler=scheduler, root_idle_gap_cap_seconds=cap
+    )
+    coordinator.activate()
+    issued: list[str] = []
+
+    async def issue(name: str) -> bool:
+        issued.append(name)
+        coordinator.observe_issued(_credit(name))
+        coordinator.complete(_credit(name))
+        return True
+
+    async def submit(name: str) -> None:
+        await coordinator.submit(_turn(name), lambda: issue(name))
+
+    for index, name in enumerate("dabc", 1):
+        scheduler.schedule_later(index * 1000, submit(name), group_id="root")
+    coordinator.observe_idle_root("root")
+    try:
+        for _ in range(8):
+            await asyncio.wait_for(runtime.drain_current(), timeout=1)
+            if issued == list("abcd"):
+                break
+            assert runtime.next_deadline_ns is not None
+            runtime.advance_to(runtime.next_deadline_ns)
+        assert issued == list("abcd")
+        assert runtime.now_ns() == round(3 * cap * 1_000_000_000)
+    finally:
+        coordinator.close_root("root")
+        await coordinator.cancel_pending(notify_refused=False)
+        await asyncio.gather(*scheduler.cancel_all(), return_exceptions=True)
+        await runtime.drain_current()
+        runtime.assert_drained()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("late_event", ["return", "idle_observation", "refusal"])
+async def test_cancelled_replay_gate_never_rearms_idle_watchdogs(
+    late_event: str,
+) -> None:
+    runtime = VirtualTimingRuntime()
+    scheduler = LoopScheduler(runtime=runtime)
+    coordinator = ReplayBarrierCoordinator(
+        _metadata(), scheduler=scheduler, root_idle_gap_cap_seconds=300.0
+    )
+    coordinator.activate()
+    coordinator.observe_issued(_credit("a"))
+
+    async def on_refused() -> None:
+        coordinator.complete(_credit("a"))
+
+    if late_event == "refusal":
+        await coordinator.submit(
+            _turn("d"), lambda: _record_issue([], "d"), on_refused=on_refused
+        )
+    runtime.advance_to(3_659_496_839_109)
+    await coordinator.cancel_pending(notify_refused=late_event == "refusal")
+    if late_event == "return":
+        coordinator.complete(_credit("a"))
+    elif late_event == "idle_observation":
+        coordinator.observe_idle_root("another-root")
+
+    assert runtime.next_deadline_ns is None
+    runtime.assert_drained()
 
 
 @pytest.mark.asyncio

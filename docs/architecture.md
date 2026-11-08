@@ -102,11 +102,28 @@ Completions precede deadlines at the same timestamp; phase deadlines precede
 new workload timers. Warmup and profiling share the server cache and clock but
 retain separate phase identities and statistics. Final result publication waits
 for the simulator's `FINISHED` acknowledgment, including native request cleanup.
+Profiling registers a snapshot's delayed releases before awaiting its immediate
+credits. Prefill backpressure therefore cannot shift later snapshot timers away
+from their phase origin. Immediate credits are gathered together so their errors
+and cancellation remain owned by the profiling task.
 At grace expiry, phase completion waits for each cancellation terminal, worker
 return, and native accounting callback. Pending DAG joins are then cleaned up
 without waiting for workload timers beyond the cutoff.
 Wall-clock timeouts detect broken connections or stalled participants; they do
 not determine workload timing. Unsupported options fail during configuration.
+Count-based cache warmup (`warmup_requests_per_lane`) drains outstanding wire
+requests through the same coordinated event barrier before handing paused DAG
+branches to profiling. A missing cancellation acknowledgment fails the virtual
+phase instead of forcing it complete. Duration-based accelerated warmup remains
+unsupported by the simulator transport.
+An optional `trace_idle_gap_cap_seconds` uses the virtual clock to limit observed
+whole-tree idle gaps during profiling. It advances only that runtime root's
+pending timers, retains their relative spacing and predecessor dependencies,
+and never rewrites recorded dataset timestamps or advances a tree with requests
+still in flight. It is distinct from the global system-idle cap. Cancelling the
+phase's replay gate permanently stops its idle watchdogs; late request terminals
+and refusal callbacks still update completion state without leaving new virtual
+timers after teardown.
 If coordinated execution fails, the timing manager requests cancellation with
 the original service error. The controller collects available records within
 a bounded timeout and exits nonzero without publishing phase success.

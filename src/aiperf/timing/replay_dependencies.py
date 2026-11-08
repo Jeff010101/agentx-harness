@@ -185,6 +185,7 @@ class ReplayBarrierCoordinator:
         self._releases_paused = False
         self._scheduler = scheduler
         self._root_idle_gap_cap_seconds = root_idle_gap_cap_seconds
+        self._idle_watchdogs_stopped = False
         self._root_idle_jumps = 0
         self._root_idle_seconds_skipped = 0.0
 
@@ -301,7 +302,8 @@ class ReplayBarrierCoordinator:
         """Advance only this tree's timers after a fully idle capped gap."""
         cap = self._root_idle_gap_cap_seconds
         if (
-            cap is None
+            self._idle_watchdogs_stopped
+            or cap is None
             or cap < 0
             or self._scheduler is None
             or state.idle_watchdog is not None
@@ -407,6 +409,8 @@ class ReplayBarrierCoordinator:
 
     async def cancel_pending(self, *, notify_refused: bool) -> None:
         """Cancel retained dispatches during phase teardown."""
+        # Late terminal and refusal callbacks still update completion state.
+        self._idle_watchdogs_stopped = True
         callbacks = []
         for state in self._roots.values():
             if state.idle_watchdog is not None:
