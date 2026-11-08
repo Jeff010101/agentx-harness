@@ -51,6 +51,27 @@ def test_snapshot_warmup_and_infinite_grace_remain_supported() -> None:
     validate_simulation(run, timing, "tcp://127.0.0.1:30001")
 
 
+@pytest.mark.parametrize("cap", [0.0, 300.0, None])
+def test_runtime_trace_cap_and_count_driven_cache_warmup_are_supported(
+    cap: float | None,
+) -> None:
+    run, timing = configuration(grace_period_sec=900.0)
+    run.cfg.get_default_dataset = lambda: SimpleNamespace(
+        trace_idle_gap_cap_seconds=cap
+    )
+    warmup = timing.phase_configs[0].model_copy(
+        update={
+            "phase": CreditPhase.WARMUP,
+            "phase_index": None,
+            "warmup_requests_per_lane": 10,
+        }
+    )
+    timing = timing.model_copy(
+        update={"phase_configs": [warmup, *timing.phase_configs]}
+    )
+    validate_simulation(run, timing, "tcp://127.0.0.1:30001")
+
+
 @pytest.mark.parametrize(
     "transport,endpoint",
     [

@@ -961,9 +961,13 @@ class PhaseRunner(TaskManagerMixin):
             False,
         )
 
-    async def _wait_for_accelerated_warmup_wire_drain(self) -> None:
-        while self._progress.in_flight > 0:
-            await asyncio.sleep(0.1)
+    async def _wait_for_accelerated_warmup_wire_drain(
+        self, *, timeout: float | None = None
+    ) -> None:
+        if self._progress.in_flight > 0:
+            await self._runtime.wait_event(
+                self._progress.all_credits_returned_event, timeout=timeout
+            )
 
     async def _cancel_accelerated_warmup_drain(self, *, timeout: float | None) -> None:
         stats = self._progress.create_stats(self._lifecycle)
@@ -978,13 +982,16 @@ class PhaseRunner(TaskManagerMixin):
         )
         await self._credit_router.cancel_all_credits()
         drain_timeout = Environment.TIMING.CANCEL_DRAIN_TIMEOUT
+        await self._wait_for_cancellation_drain(drain_timeout)
         try:
-            await asyncio.wait_for(
-                self._wait_for_accelerated_warmup_wire_drain(),
-                timeout=drain_timeout,
-            )
+            if self._progress.in_flight > 0:
+                await self._runtime.wait_wall_event(
+                    self._progress.all_credits_returned_event, drain_timeout
+                )
             self.info("All cancelled accelerated-warmup credits returned")
         except TimeoutError:
+            if self._runtime.is_virtual:
+                raise RuntimeError("Cancelled warmup credits did not drain") from None
             self.error(
                 f"Timeout waiting {drain_timeout}s for cancelled accelerated-warmup "
                 "credits to return. Forcing phase completion."
@@ -998,10 +1005,7 @@ class PhaseRunner(TaskManagerMixin):
             await self._wait_for_accelerated_warmup_wire_drain()
         else:
             try:
-                await asyncio.wait_for(
-                    self._wait_for_accelerated_warmup_wire_drain(),
-                    timeout=timeout,
-                )
+                await self._wait_for_accelerated_warmup_wire_drain(timeout=timeout)
             except TimeoutError as exc:
                 await self._cancel_accelerated_warmup_drain(timeout=timeout)
                 raise TimeoutError(

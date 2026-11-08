@@ -5,6 +5,7 @@
 import asyncio
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pytest import param
@@ -135,3 +136,120 @@ async def test_cancelled_phase_wait_drains_its_owned_event_activity() -> None:
         await asyncio.gather(waiter, return_exceptions=True)
     await runtime.drain_current()
     runtime.assert_drained()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("grace", [None, float("inf"), 10.0])
+async def test_accelerated_warmup_handoff_drains_at_virtual_return(
+    grace: float | None,
+) -> None:
+    runtime = VirtualTimingRuntime()
+    progress = SimpleNamespace(in_flight=1, all_credits_returned_event=asyncio.Event())
+    runner = cast(
+        PhaseRunner,
+        SimpleNamespace(
+            _runtime=runtime,
+            _progress=progress,
+            _config=SimpleNamespace(grace_period_sec=grace),
+            info=Mock(),
+        ),
+    )
+    runner._wait_for_accelerated_warmup_wire_drain = (
+        lambda **kwargs: PhaseRunner._wait_for_accelerated_warmup_wire_drain(
+            runner, **kwargs
+        )
+    )
+
+    def returned() -> None:
+        progress.in_flight = 0
+        progress.all_credits_returned_event.set()
+
+    runtime.call_later(8.8, returned)
+    waiter = runtime.create_task(
+        PhaseRunner._wait_for_accelerated_warmup_handoff(runner)
+    )
+    try:
+        await asyncio.wait_for(runtime.drain_current(), timeout=1.0)
+        assert not waiter.done()
+        assert runtime.next_deadline_ns == 8_800_000_000
+        runtime.advance_to(8_800_000_000)
+        await asyncio.wait_for(runtime.drain_current(), timeout=1.0)
+        await asyncio.wait_for(waiter, timeout=1.0)
+        runtime.assert_drained()
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_accelerated_warmup_wire_timeout_uses_virtual_deadline() -> None:
+    runtime = VirtualTimingRuntime()
+    runner = cast(
+        PhaseRunner,
+        SimpleNamespace(
+            _runtime=runtime,
+            _progress=SimpleNamespace(
+                in_flight=1, all_credits_returned_event=asyncio.Event()
+            ),
+        ),
+    )
+
+    async def wait_for_timeout() -> None:
+        with pytest.raises(TimeoutError):
+            await PhaseRunner._wait_for_accelerated_warmup_wire_drain(
+                runner, timeout=5.0
+            )
+
+    waiter = runtime.create_task(wait_for_timeout())
+    try:
+        await asyncio.wait_for(runtime.drain_current(), timeout=1.0)
+        assert not waiter.done()
+        assert runtime.next_deadline_ns == 5_000_000_000
+        runtime.advance_to(5_000_000_000)
+        await asyncio.wait_for(runtime.drain_current(), timeout=1.0)
+        await waiter
+        runtime.assert_drained()
+    finally:
+        waiter.cancel()
+        await asyncio.gather(waiter, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("router_failure", [False, True])
+async def test_virtual_warmup_cancel_failure_cannot_force_completion(
+    router_failure: bool,
+) -> None:
+    runtime = VirtualTimingRuntime()
+    runtime.wait_wall_event = AsyncMock(side_effect=TimeoutError)
+    progress = SimpleNamespace(
+        in_flight=1,
+        all_credits_returned_event=asyncio.Event(),
+        create_stats=Mock(),
+    )
+    router = SimpleNamespace(
+        cancel_all_credits=AsyncMock(),
+        wait_for_cancellation_drain=AsyncMock(
+            side_effect=TimeoutError if router_failure else None
+        ),
+    )
+    runner = cast(
+        PhaseRunner,
+        SimpleNamespace(
+            _runtime=runtime,
+            _progress=progress,
+            _credit_router=router,
+            _lifecycle=Mock(),
+            warning=Mock(),
+            info=Mock(),
+            error=Mock(),
+            _release_stuck_slots=Mock(),
+        ),
+    )
+    runner._wait_for_cancellation_drain = (
+        lambda timeout: PhaseRunner._wait_for_cancellation_drain(runner, timeout)
+    )
+    with pytest.raises(RuntimeError, match="credits did not drain"):
+        await PhaseRunner._cancel_accelerated_warmup_drain(runner, timeout=5.0)
+    assert not progress.all_credits_returned_event.is_set()
+    runner._release_stuck_slots.assert_not_called()
+    router.wait_for_cancellation_drain.assert_awaited_once()
