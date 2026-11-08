@@ -1837,6 +1837,7 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
                 self._rootless_lane_outstanding[lane] = len(dispatchable)
         # Spread (default): every lane shares one phase-wide T0, preserving
         # cross-trajectory offsets. Burst: each lane uses its own minimum.
+        immediate_turns: list[TurnToSend] = []
         for state in dispatchable:
             session = self.conversation_source.session_for_state(state)
             turn = self._build_turn_for_session(session, state.next_turn_index)
@@ -1855,14 +1856,27 @@ class AgenticReplayStrategy(AIPerfLoggerMixin):
                     self.credit_issuer.issue_credit(turn),
                     group_id=turn.effective_root_correlation_id,
                 )
-            elif state.agent_depth > 0:
-                await self._issue_child_continuation_or_drain(turn)
             else:
-                await self.credit_issuer.issue_credit(turn)
+                immediate_turns.append(turn)
 
         root_correlation_id = self._lane_root_corr(snapshot)
         if root_correlation_id is not None:
             self.credit_issuer.replay_gate.observe_idle_root(root_correlation_id)
+
+        # Register every timer before prefill backpressure can advance the clock.
+        if immediate_turns:
+            results = await self._runtime.gather(
+                *(
+                    self._issue_child_continuation_or_drain(turn)
+                    if turn.agent_depth > 0
+                    else self.credit_issuer.issue_credit(turn)
+                    for turn in immediate_turns
+                ),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
 
     def _get_snapshot(self, trajectory: Trajectory) -> TrajectorySnapshot:
         """Return the persistent sampled snapshot for a trajectory lane.

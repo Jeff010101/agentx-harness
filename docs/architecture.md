@@ -102,6 +102,10 @@ Completions precede deadlines at the same timestamp; phase deadlines precede
 new workload timers. Warmup and profiling share the server cache and clock but
 retain separate phase identities and statistics. Final result publication waits
 for the simulator's `FINISHED` acknowledgment, including native request cleanup.
+Profiling registers a snapshot's delayed releases before awaiting its immediate
+credits. Prefill backpressure therefore cannot shift later snapshot timers away
+from their phase origin. Immediate credits are gathered together so their errors
+and cancellation remain owned by the profiling task.
 At grace expiry, phase completion waits for each cancellation terminal, worker
 return, and native accounting callback. Pending DAG joins are then cleaned up
 without waiting for workload timers beyond the cutoff.
